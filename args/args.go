@@ -2,6 +2,7 @@ package args
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -9,9 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
+	"github.com/slack-go/slack"
 	handleResponse "gitlab.sweetwater.com/mike_mayo/slackbot/response"
 	"gitlab.sweetwater.com/mike_mayo/slackbot/slices"
 )
+
+var err = godotenv.Load(".env")
+var api = slack.New(os.Getenv("OAUTH_TOKEN"), slack.OptionDebug(true))
 
 type Leaderboard struct {
 	User string
@@ -28,34 +34,109 @@ type Game struct {
 	Letters     string
 }
 
-func CheckArgs(res http.ResponseWriter, args []string, user string) {
+func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
+	args := strings.Fields(command.Text)
 	switch args[0] {
 	case "create":
-		createGame(res, args[1], user)
+		createGame(res, command)
 	case "play":
-		gameId, err := strconv.Atoi(args[1])
-
-		if err != nil {
-			handleResponse.HandleResponse(res, "Could not convert game id to int", 200)
-		}
-
-		playGame(res, gameId, args[2:], user)
+		playGame(res, command)
 	case "find":
 		findGame(res)
 	}
 }
 
-func createGame(res http.ResponseWriter, letters string, user string) {
+func createGame(res http.ResponseWriter, command slack.SlashCommand) {
+	user := strings.Split(command.UserName, "_")[0]
+	titleCase := strings.ToUpper(strings.Split(user, "")[0])
+	firstname := titleCase + strings.Join(strings.Split(user, "")[1:], "")
+	welcome := ":wave: " + firstname + "!  If you haven't played yet, here are some pointers to get you started.\n1. Provide some letters to create the game with.\n2. Duplicate letters aren't necessary.  The game will use the letters given multiple times if it can.\n3. You will *_only_* be shown the amount of words that are created but *_not_* the words themselves.\n4. Have fun!"
+	var modal slack.ModalViewRequest
+
+	modal.CallbackID = "create"
+	modal.Type = slack.ViewType("modal")
+
+	modal.Close = slack.NewTextBlockObject("plain_text", "Cancel", false, false)
+	// modal.Submit = slack.NewTextBlockObject("plain_text", "Submit", false, false)
+	modal.Title = slack.NewTextBlockObject("plain_text", "Angrms", false, false)
+
+	header := slack.NewTextBlockObject("mrkdwn", welcome, false, false)
+	headerSection := slack.NewSectionBlock(header, nil, nil)
+	divider := slack.NewDividerBlock()
+
+	inputLabel := slack.NewTextBlockObject("plain_text", "Letters to create game with", false, false)
+	inputPlaceholder := slack.NewTextBlockObject("plain_text", "rstlne", false, false)
+	inputBlock := slack.NewPlainTextInputBlockElement(inputPlaceholder, "letters")
+	input := slack.NewInputBlock("letters", inputLabel, nil, inputBlock)
+	input.DispatchAction = true
+
+	modal.Blocks = slack.Blocks{
+		BlockSet: []slack.Block{
+			headerSection,
+			divider,
+			input,
+		},
+	}
+
+	res.Write([]byte(""))
+	r, err := api.OpenView(command.TriggerID, modal)
+	s, _ := json.Marshal(r.View)
+	fmt.Print(string(s))
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+}
+
+func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
+	letters := payload.View.State.Values["letters"]["letters"].Value
+	user := string(payload.User.Name)
 	words := slices.FindWordsWithLetters(letters)
 
+	var view slack.ModalViewRequest
+	view.CallbackID = payload.CallbackID
+	view.Type = payload.View.Type
+	view.Title = payload.View.Title
+	view.Close = payload.View.Close
+
 	if len(words) == 0 {
-		handleResponse.HandleResponse(res, "No words found from '"+letters+"'", 200)
+		message := "No words found with letters '" + letters + "'!  Try another combination!"
+		text := slack.NewTextBlockObject("mrkdwn", message, false, false)
+		textBlock := slack.NewSectionBlock(text, nil, nil)
+
+		blocks := payload.View.Blocks
+		blocks.BlockSet = append(blocks.BlockSet, textBlock)
+
+		view.Blocks = blocks
+
+		_, err := api.UpdateView(view, payload.View.ExternalID, payload.Hash, payload.View.ID)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 	} else {
-		handleResponse.HandleResponse(res, words, 200)
+		message := "You created a game that has " + strconv.Itoa(len(words)) + " words to find! 🚀🚀🚀"
+		textBlock := slack.NewTextBlockObject("plain_text", message, false, false)
+		section := slack.NewSectionBlock(textBlock, nil, nil)
+
+		view.ClearOnClose = true
+		view.Close.Text = "Close"
+
+		view.Blocks = slack.Blocks{
+			BlockSet: []slack.Block{
+				section,
+			},
+		}
+		_, err := api.PushView(payload.TriggerID, view)
+
+		if err != nil {
+			fmt.Print(err)
+			return
+		}
 		file, err := ioutil.ReadFile("games.json")
 
 		if err != nil {
-			handleResponse.HandleResponse(res, "Could not read games file", 200)
+			fmt.Print(err)
 			return
 		}
 
@@ -79,7 +160,7 @@ func createGame(res http.ResponseWriter, letters string, user string) {
 		jsonString, err := json.Marshal(games)
 
 		if err != nil {
-			handleResponse.HandleResponse(res, "Could not marshal games json", 200)
+			fmt.Print(err)
 			return
 		}
 
@@ -87,7 +168,15 @@ func createGame(res http.ResponseWriter, letters string, user string) {
 	}
 }
 
-func playGame(res http.ResponseWriter, gameId int, guesses []string, user string) {
+func playGame(res http.ResponseWriter, command slack.SlashCommand) {
+	args := strings.Fields(command.Text)
+	gameId, err := strconv.Atoi(args[1])
+	guesses := args[2:]
+	user := command.UserName
+
+	if err != nil {
+		handleResponse.HandleResponse(res, "Could not convert game id to int", 200)
+	}
 	file, err := os.ReadFile("games.json")
 
 	if err != nil {
@@ -134,11 +223,13 @@ func playGame(res http.ResponseWriter, gameId int, guesses []string, user string
 		os.WriteFile("games.json", jsonString, os.ModePerm)
 	} else if len(wordsFound) > 0 {
 		var found []string
-		for word, _ := range wordsFound {
+		fmt.Println(found, wordsFound)
+		for word := range wordsFound {
 			found = append(found, string(word))
 		}
-
 		handleResponse.HandleResponse(res, "You found: "+strings.Join(found, " and ")+"!", 200)
+	} else {
+		res.Write([]byte("You didn't find any valid words!"))
 	}
 }
 

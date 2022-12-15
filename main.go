@@ -14,7 +14,7 @@ var err = godotenv.Load(".env")
 
 func main() {
 	http.HandleFunc("/", slackHandler.SlashCommandHandler)
-	// http.HandleFunc("/interactive", slackHandler.InteractiveHandler)
+	http.HandleFunc("/interactive", slackHandler.InteractiveHandler)
 
 	port := os.Getenv("PORT")
 	fmt.Println("Just felt like running.... http://localhost" + port)
