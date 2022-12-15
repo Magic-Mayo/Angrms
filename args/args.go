@@ -36,13 +36,19 @@ type Game struct {
 
 func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 	args := strings.Fields(command.Text)
-	switch args[0] {
-	case "create":
-		createGame(res, command)
-	case "play":
-		playGame(res, command)
-	case "find":
-		findGame(res)
+	if len(args) == 0 {
+		res.Write([]byte("Please use one of the following arguments to get started: create, play, or find"))
+	} else {
+		switch args[0] {
+		case "create":
+			createGame(res, command)
+		case "play":
+			playGame(res, command)
+		case "find":
+			findGame(res)
+		default:
+			res.Write([]byte("Please use one of the following arguments to get started: create, play, or find"))
+		}
 	}
 }
 
@@ -79,9 +85,8 @@ func createGame(res http.ResponseWriter, command slack.SlashCommand) {
 	}
 
 	res.Write([]byte(""))
-	r, err := api.OpenView(command.TriggerID, modal)
-	s, _ := json.Marshal(r.View)
-	fmt.Print(string(s))
+	_, err := api.OpenView(command.TriggerID, modal)
+
 	if err != nil {
 		fmt.Println(err)
 		return
