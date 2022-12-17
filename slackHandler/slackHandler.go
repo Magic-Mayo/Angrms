@@ -75,5 +75,9 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 	switch modalRes.View.CallbackID {
 	case "create":
 		args.SaveNewGame(modalRes, res)
+	case "play":
+		args.PlayGame(modalRes, res)
+	case "find":
+		args.StartGame(modalRes, res)
 	}
 }
