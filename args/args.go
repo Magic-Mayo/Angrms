@@ -42,18 +42,17 @@ type GameOption struct {
 
 func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 	args := strings.Fields(command.Text)
+
 	if len(args) == 0 {
-		res.Write([]byte("Please use one of the following arguments to get started: create, play, or find"))
+		mainMenu(res, command)
 	} else {
 		switch args[0] {
 		case "create":
 			createGame(res, command)
 		case "play":
 			findGame(res, command)
-		case "find":
-			// findGame(res)
 		default:
-			res.Write([]byte("Please use one of the following arguments to get started: create, play, or find"))
+			mainMenu(res, command)
 		}
 	}
 }
@@ -247,7 +246,7 @@ func addGameOptions(offset int, games []Game) slack.ActionBlock {
 
 		optionBlock := slack.NewOptionBlockObject(strconv.Itoa(i), optionText, description)
 		gameSelect := slack.NewRadioButtonsBlockElement(strconv.Itoa(i), optionBlock)
-		options = append(options, *gameSelect)
+		options = append(options, gameSelect)
 	}
 
 	actionBlock := slack.NewActionBlock("game", options...)
@@ -334,7 +333,6 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 			wordsFound = append(wordsFound, word)
 		}
 	}
-	fmt.Printf("%+v", wordsFound)
 
 	if len(wordsFound) == len(game.Words) {
 		_, _, creator := getUser(game.User)
@@ -436,7 +434,8 @@ func findGame(res http.ResponseWriter, command slack.SlashCommand) {
 	}
 
 	if len(games) == 0 {
-
+		res.Write([]byte("Could not find any games :cry:"))
+		return
 	}
 
 	apiRes, err := api.OpenView(command.TriggerID, view)
@@ -446,6 +445,50 @@ func findGame(res http.ResponseWriter, command slack.SlashCommand) {
 	}
 }
 
-func MainMenu(res http.ResponseWriter) {
+func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
+	firstname, _, _ := getUser(command.UserName)
+	var view slack.ModalViewRequest
+	view.Type = slack.ViewType("modal")
+	view.CallbackID = "main"
+	view.Title = slack.NewTextBlockObject("plain_text", "Angrms Main Menu", false, false)
+	view.Close = slack.NewTextBlockObject("plain_text", "Close", false, false)
+	view.ClearOnClose = true
 
+	welcome := ":wave: " + firstname + "!  If you haven't played yet, here are some pointers to get you started when creating a game. \nGo ahead and create a game or find one to play :point_down::point_down::point_down:"
+	messageBlock := slack.NewTextBlockObject("plain_text", welcome, false, false)
+	messageSection := slack.NewSectionBlock(messageBlock, nil, nil)
+
+	createMessage := "1. Provide some letters to create the game with.\n2. Duplicate letters aren't necessary.  The game will use the letters given multiple times if it can.\n3. You will *_only_* be shown the amount of words that are created but *_not_* the words themselves."
+	createBlock := slack.NewTextBlockObject("mrkdwn", createMessage, false, false)
+	createSection := slack.NewSectionBlock(createBlock, nil, nil)
+	playMessage := "1. You will guess one word at a time\n2. If a word is correct it will show up at the bottom\n3. When you find all the words in a game you will be added to that game's leaderboard.\n4. Have fun! :confetti_ball:"
+	playBlock := slack.NewTextBlockObject("plain_text", playMessage, false, false)
+	playSection := slack.NewSectionBlock(playBlock, nil, nil)
+
+	playButtonMessage := slack.NewTextBlockObject("plain_text", "Play a new game", false, false)
+	playButtonText := slack.NewTextBlockObject("plain_text", "Play", false, false)
+	playButton := slack.NewButtonBlockElement("play", "play", playButtonText)
+	playButtonAccessory := slack.NewAccessory(playButton)
+	playButtonSection := slack.NewSectionBlock(playButtonMessage, nil, playButtonAccessory)
+
+	createButtonMessage := slack.NewTextBlockObject("plain_text", "Create a new game", false, false)
+	createButtonText := slack.NewTextBlockObject("plain_text", "Create", false, false)
+	createButton := slack.NewButtonBlockElement("create", "create", createButtonText)
+	createButtonAccessory := slack.NewAccessory(createButton)
+	createButtonSection := slack.NewSectionBlock(createButtonMessage, nil, createButtonAccessory)
+
+	view.Blocks.BlockSet = []slack.Block{
+		messageSection,
+		createSection,
+		createButtonSection,
+		playSection,
+		playButtonSection,
+	}
+
+	apiRes, err := api.OpenView(command.TriggerID, view)
+
+	if err != nil {
+		fmt.Printf("%+v", apiRes)
+		return
+	}
 }
