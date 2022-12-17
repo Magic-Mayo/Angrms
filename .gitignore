@@ -1,1 +1,4 @@
-*.env*
+*.env
+games.json
+
+!example.env
