@@ -79,5 +79,7 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 		args.PlayGame(modalRes, res)
 	case "find":
 		args.StartGame(modalRes, res)
+	case "main":
+		args.ParseMenu(modalRes, res)
 	}
 }
