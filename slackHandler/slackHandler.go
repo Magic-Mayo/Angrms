@@ -81,5 +81,9 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 		args.StartGame(modalRes, res)
 	case "main":
 		args.ParseMenu(modalRes, res)
+	case "stats":
+		args.StatsInitView(res, modalRes.TriggerID, true)
+	case "gamestats":
+		args.ShowStats(modalRes, res)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
-	handleResponse "gitlab.sweetwater.com/mike_mayo/slackbot/response"
 	"gitlab.sweetwater.com/mike_mayo/slackbot/slices"
 )
 
@@ -21,18 +20,20 @@ var api = slack.New(os.Getenv("OAUTH_TOKEN"), slack.OptionDebug(true))
 var nameSeparator = os.Getenv("NAME_SEPARATOR")
 
 type Leaderboard struct {
-	User string
-	Date time.Time
+	User string    `json:"user,omitempty"`
+	Date time.Time `json:"date,omitempty"`
 }
 
 type Game struct {
-	User        string
-	Id          int
-	Active      bool
-	Date        time.Time
-	Words       []string
-	Leaderboard []Leaderboard
-	Letters     string
+	User        string        `json:"user"`
+	Id          int           `json:"id"`
+	Active      bool          `json:"active"`
+	Date        time.Time     `json:"date"`
+	Words       []string      `json:"words"`
+	Leaderboard []Leaderboard `json:"leaderboard,omitempty"`
+	Letters     string        `json:"letters"`
+	Private     bool          `json:"private,omitempty"`
+	Expiration  string        `json:"expiration,omitempty"`
 }
 
 type GameOption struct {
@@ -51,9 +52,11 @@ func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 		case "create":
 			createGame(command.UserName, command.TriggerID)
 		case "play":
-			findGame(res, command.UserName, command.TriggerID)
+			findGame(res, command)
+		case "stats":
+			StatsInitView(res, command.TriggerID, false)
 		default:
-			mainMenu(res, command)
+			res.Write([]byte("Only the following commands are available:\n`/angrm create`\n`/angrm play`\n`/angrm stats`"))
 		}
 	}
 }
@@ -75,7 +78,7 @@ func getGames(res http.ResponseWriter) []Game {
 func getActiveGames(games []Game, user string) []Game {
 	var spliced []Game
 	for _, game := range games {
-		if game.Active {
+		if game.Active && !game.Private {
 			if len(game.Leaderboard) == 0 {
 				spliced = append(spliced, game)
 				continue
@@ -86,6 +89,17 @@ func getActiveGames(games []Game, user string) []Game {
 				}
 				spliced = append(spliced, game)
 			}
+		}
+	}
+
+	return spliced
+}
+
+func getOwnPrivateGames(games []Game, user string) []Game {
+	var spliced []Game
+	for _, game := range games {
+		if game.Private && game.User == user {
+			spliced = append(spliced, game)
 		}
 	}
 
@@ -125,6 +139,7 @@ func createGameModal(user string) slack.ModalViewRequest {
 
 	modal.Close = slack.NewTextBlockObject("plain_text", "Cancel", false, false)
 	modal.Title = slack.NewTextBlockObject("plain_text", "Angrms", false, false)
+	modal.Submit = slack.NewTextBlockObject("plain_text", "Create Game", false, false)
 
 	header := slack.NewTextBlockObject("mrkdwn", message, false, false)
 	headerSection := slack.NewSectionBlock(header, nil, nil)
@@ -134,13 +149,29 @@ func createGameModal(user string) slack.ModalViewRequest {
 	inputPlaceholder := slack.NewTextBlockObject("plain_text", "rstlne", false, false)
 	inputBlock := slack.NewPlainTextInputBlockElement(inputPlaceholder, "letters")
 	input := slack.NewInputBlock("letters", inputLabel, nil, inputBlock)
-	input.DispatchAction = true
+
+	expirationMessage := "How long would you like this game to be active? Hint: use a number followed by a time unit. If you don't want to set a time limit, leave this field blank"
+	expirationLabel := slack.NewTextBlockObject("plain_text", expirationMessage, false, false)
+	expirationHint := slack.NewTextBlockObject("plain_text", "Expiration untis: m = minutes, h = hours, d = days", false, false)
+	expirationPlaceholder := slack.NewTextBlockObject("plain_text", "3d", false, false)
+	expirationInput := slack.NewPlainTextInputBlockElement(expirationPlaceholder, "expiration")
+	expirationBlock := slack.NewInputBlock("expiration", expirationLabel, expirationHint, expirationInput)
+	expirationBlock.Optional = true
+
+	privateBlock := slack.NewTextBlockObject("plain_text", "Select to make this game playable by only you", false, false)
+	privateOption := slack.NewOptionBlockObject("true", privateBlock, nil)
+	privateCheckBox := slack.NewCheckboxGroupsBlockElement("private", privateOption)
+	privateLabel := slack.NewTextBlockObject("plain_text", "Private game?", false, false)
+	privateInput := slack.NewInputBlock("private", privateLabel, nil, privateCheckBox)
+	privateInput.Optional = true
 
 	modal.Blocks = slack.Blocks{
 		BlockSet: []slack.Block{
 			headerSection,
 			divider,
+			expirationBlock,
 			input,
+			privateInput,
 		},
 	}
 
@@ -150,10 +181,10 @@ func createGameModal(user string) slack.ModalViewRequest {
 func createGame(user string, triggerId string) {
 	modal := createGameModal(user)
 
-	_, err := api.OpenView(triggerId, modal)
+	apiRes, err := api.OpenView(triggerId, modal)
 
 	if err != nil {
-		fmt.Println(err)
+		fmt.Printf("%+v", apiRes)
 		return
 	}
 }
@@ -172,8 +203,41 @@ func removeDuplicates(letters string) string {
 	return letterSet
 }
 
+func getExpiry(chosenExpiry string, creation time.Time) bool {
+	length := len(chosenExpiry)
+	unit := strings.ToLower(chosenExpiry[length-2 : length-1])
+	amount, _ := strconv.Atoi(chosenExpiry[:length-2])
+	timeSince := time.Since(creation)
+	expired := false
+
+	switch unit {
+	case "m":
+		if time.Duration.Minutes(timeSince) > float64(amount) {
+			expired = true
+		}
+	case "h":
+		if time.Duration.Hours(timeSince) > float64(amount) {
+			expired = true
+		}
+	case "d":
+		if time.Duration.Hours(timeSince) > float64(amount*24) {
+			expired = true
+		}
+	}
+
+	return expired
+}
+
 func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 	letters := payload.View.State.Values["letters"]["letters"].Value
+	expiration := payload.View.State.Values["expiration"]["expiration"].Value
+	options := payload.View.State.Values["private"]["private"].SelectedOptions
+	private := false
+
+	if len(options) > 0 {
+		private = true
+	}
+
 	letters = removeDuplicates(letters)
 	user := string(payload.User.Name)
 	words := slices.FindWordsWithLetters(letters)
@@ -181,17 +245,13 @@ func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 	view := updateModal(payload)
 
 	if len(words) == 0 {
-		message := "No words found with letters '" + letters + "'!  Try another combination!"
-		text := slack.NewTextBlockObject("mrkdwn", message, false, false)
-		textBlock := slack.NewSectionBlock(text, nil, nil)
+		messageMap := make(map[string]string)
+		messageMap["letters"] = "No words found with letters '" + letters + "'!  Try another combination!"
+		errors := slack.NewErrorsViewSubmissionResponse(messageMap)
 
-		view.Blocks.BlockSet = append(view.Blocks.BlockSet, textBlock)
-
-		_, err := api.UpdateView(view, payload.View.ExternalID, payload.Hash, payload.View.ID)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
+		jsonString, _ := json.Marshal(errors)
+		res.Header().Add("Content-Type", "application/json")
+		res.Write(jsonString)
 	} else {
 		message := "You created a game that has " + strconv.Itoa(len(words)) + " words to find! 🚀🚀🚀"
 		textBlock := slack.NewTextBlockObject("plain_text", message, false, false)
@@ -208,12 +268,12 @@ func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 		view.ClearOnClose = true
 		view.Close.Text = "Close"
 
-		apiRes, err := api.PushView(payload.TriggerID, view)
+		viewRes := slack.NewUpdateViewSubmissionResponse(&view)
 
-		if err != nil {
-			fmt.Printf("%+v", apiRes)
-			return
-		}
+		jsonString, _ := json.Marshal(viewRes)
+
+		res.Header().Add("Content-Type", "application/json")
+		res.Write(jsonString)
 
 		games := getGames(res)
 		id := len(games)
@@ -227,6 +287,8 @@ func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 		game.Date = time.Now()
 		game.Id = id
 		game.Letters = letters
+		game.Private = private
+		game.Expiration = expiration
 
 		games = append(games, game)
 
@@ -244,18 +306,19 @@ func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 func addGameOptions(offset int, games []Game) slack.ActionBlock {
 	var options []slack.BlockElement
 	for i := offset; i < len(games); i++ {
-		_, _, fullname := getUser(games[i].User)
-		letters := games[i].Letters
-		solved := len(games[i].Leaderboard)
+		game := games[i]
+		_, _, fullname := getUser(game.User)
+		letters := game.Letters
+		solved := len(game.Leaderboard)
 
 		message := strings.ToTitle(letters) + " - " + strconv.Itoa(solved) + " users solved"
 		optionText := slack.NewTextBlockObject("mrkdwn", message, false, false)
 
-		descriptionText := fullname + " - " + strconv.Itoa(len(games[i].Words)) + " words"
+		descriptionText := fullname + " - " + strconv.Itoa(len(game.Words)) + " words"
 		description := slack.NewTextBlockObject("plain_text", descriptionText, false, false)
 
-		optionBlock := slack.NewOptionBlockObject(strconv.Itoa(i), optionText, description)
-		gameSelect := slack.NewRadioButtonsBlockElement(strconv.Itoa(i), optionBlock)
+		optionBlock := slack.NewOptionBlockObject(strconv.Itoa(game.Id), optionText, description)
+		gameSelect := slack.NewRadioButtonsBlockElement(strconv.Itoa(game.Id), optionBlock)
 		options = append(options, gameSelect)
 	}
 
@@ -267,8 +330,7 @@ func gameInput(gameId string) *slack.InputBlock {
 	inputLabel := slack.NewTextBlockObject("plain_text", "Make a guess!", false, false)
 	inputHint := slack.NewTextBlockObject("plain_text", "Game ID "+gameId, false, false)
 	inputBlock := slack.NewPlainTextInputBlockElement(nil, "letters")
-	input := slack.NewInputBlock("letters", inputLabel, inputHint, inputBlock)
-	input.BlockID = "guess"
+	input := slack.NewInputBlock("guess", inputLabel, inputHint, inputBlock)
 	input.DispatchAction = true
 
 	return input
@@ -353,15 +415,13 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	}
 
 	if incorrectGuess {
-		var errors slack.ViewSubmissionResponse
-		errorMessage := "'" + guess + "' is incorrect!"
 		errorMap := make(map[string]string)
-		errors.ResponseAction = "errors"
-		errors.Errors = errorMap
-		errors.Errors["guess"] = errorMessage
+		errorMap["guess"] = "'" + guess + "' is incorrect!"
+		errors := slack.NewErrorsViewSubmissionResponse(errorMap)
 
 		jsonString, _ := json.Marshal(errors)
 
+		res.Header().Add("Content-Type", "application/json")
 		res.Write(jsonString)
 	} else if len(wordsFound) == len(game.Words) {
 		_, _, creator := getUser(game.User)
@@ -397,7 +457,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 		jsonString, err := json.Marshal(games)
 
 		if err != nil {
-			handleResponse.HandleResponse(res, "Could not marshal json", 200)
+			res.Write([]byte("Could not marshal json"))
 		}
 
 		os.WriteFile("games.json", jsonString, os.ModePerm)
@@ -439,8 +499,15 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	}
 }
 
-func findGameModal(res http.ResponseWriter, user string) (slack.ModalViewRequest, []Game) {
-	games := getActiveGames(getGames(res), user)
+func findGameModal(res http.ResponseWriter, user string, private bool) (slack.ModalViewRequest, []Game) {
+	var games []Game
+	games = getGames(res)
+	if private {
+		games = getOwnPrivateGames(games, user)
+	} else {
+		games = getActiveGames(games, user)
+	}
+	spew.Dump(games)
 	firstname, _, _ := getUser(user)
 
 	var view slack.ModalViewRequest
@@ -469,15 +536,26 @@ func findGameModal(res http.ResponseWriter, user string) (slack.ModalViewRequest
 	return view, games
 }
 
-func findGame(res http.ResponseWriter, user string, triggerId string) {
-	view, games := findGameModal(res, user)
+func findGame(res http.ResponseWriter, command slack.SlashCommand) {
+	params := strings.Fields(command.Text)
+	var private bool
+	if len(params) < 2 {
+		private = false
+	} else if params[1] == "private" {
+		private = true
+	}
+	view, games := findGameModal(res, command.UserName, private)
 
 	if len(games) == 0 {
-		res.Write([]byte("Could not find any games :cry:"))
-		return
+		message := "Could not find any games :cry:"
+		messageBlock := slack.NewTextBlockObject("plain_text", message, false, false)
+		messageSection := slack.NewSectionBlock(messageBlock, nil, nil)
+		view.Blocks.BlockSet = []slack.Block{
+			messageSection,
+		}
 	}
 
-	apiRes, err := api.OpenView(triggerId, view)
+	apiRes, err := api.OpenView(command.TriggerID, view)
 
 	if err != nil {
 		fmt.Printf("%+v", apiRes)
@@ -512,6 +590,13 @@ func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
 	playButtonSection := slack.NewSectionBlock(playButtonMessage, nil, playButtonAccessory)
 	playButtonSection.BlockID = "play"
 
+	playPrivateButtonMessage := slack.NewTextBlockObject("plain_text", "Play one of your private games", false, false)
+	playPrivateButtonText := slack.NewTextBlockObject("plain_text", "Play Private", false, false)
+	playPrivateButton := slack.NewButtonBlockElement("play-private", "play-private", playPrivateButtonText)
+	playPrivateButtonAccessory := slack.NewAccessory(playPrivateButton)
+	playPrivateButtonSection := slack.NewSectionBlock(playPrivateButtonMessage, nil, playPrivateButtonAccessory)
+	playPrivateButtonSection.BlockID = "play-private"
+
 	createButtonMessage := slack.NewTextBlockObject("plain_text", "Create a new game", false, false)
 	createButtonText := slack.NewTextBlockObject("plain_text", "Create", false, false)
 	createButton := slack.NewButtonBlockElement("create", "create", createButtonText)
@@ -519,12 +604,20 @@ func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
 	createButtonSection := slack.NewSectionBlock(createButtonMessage, nil, createButtonAccessory)
 	createButtonSection.BlockID = "create"
 
+	statsMessage := slack.NewTextBlockObject("plain_text", "Check out the leaderboards", false, false)
+	statsButtonText := slack.NewTextBlockObject("plain_text", "Stats", false, false)
+	statsButton := slack.NewButtonBlockElement("stats", "stats", statsButtonText)
+	statsButtonAccessory := slack.NewAccessory(statsButton)
+	statsSection := slack.NewSectionBlock(statsMessage, nil, statsButtonAccessory)
+
 	view.Blocks.BlockSet = []slack.Block{
 		messageSection,
 		createSection,
 		createButtonSection,
 		playSection,
 		playButtonSection,
+		playPrivateButtonSection,
+		statsSection,
 	}
 
 	apiRes, err := api.OpenView(command.TriggerID, view)
@@ -537,39 +630,112 @@ func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
 
 func ParseMenu(req slack.InteractionCallback, res http.ResponseWriter) {
 	selectedOption := req.ActionCallback.BlockActions[0].ActionID
+
 	var view slack.ModalViewRequest
-
-	res.Write([]byte(""))
-
 	switch selectedOption {
 	case "create":
 		view = createGameModal(req.User.Name)
 	case "play":
-		modal, games := findGameModal(res, req.User.Name)
+		modal, games := findGameModal(res, req.User.Name, false)
 		view = modal
 
 		if len(games) == 0 {
-			var viewResponse slack.ViewSubmissionResponse
-			viewResponse.ResponseAction = "errors"
-			errorMessage := make(map[string]string)
-			viewResponse.Errors = errorMessage
-			viewResponse.Errors["play"] = "Could not find any games :cry:"
-
-			jsonString, err := json.Marshal(viewResponse)
-
-			spew.Dump(viewResponse)
-
-			if err != nil {
-				fmt.Printf("%+v", err)
-				return
+			viewResponse := slack.NewTextBlockObject("plain_text", "Could not find any games :cry:", false, false)
+			viewSection := slack.NewSectionBlock(viewResponse, nil, nil)
+			view.Blocks.BlockSet = []slack.Block{
+				viewSection,
 			}
-
-			res.Write(jsonString)
-			return
 		}
+	case "play-private":
+		modal, games := findGameModal(res, req.User.Name, true)
+		view = modal
+
+		if len(games) == 0 {
+			viewResponse := slack.NewTextBlockObject("plain_text", "Could not find any games :cry:", false, false)
+			viewSection := slack.NewSectionBlock(viewResponse, nil, nil)
+			view.Blocks.BlockSet = []slack.Block{
+				viewSection,
+			}
+		}
+	case "stats":
+		StatsInitView(res, req.TriggerID, true)
+		return
 	}
 
-	apiRes, err := api.UpdateView(view, req.View.ExternalID, req.Hash, req.View.ID)
+	apiRes, err := api.UpdateView(view, "", req.Hash, req.View.ID)
+
+	if err != nil {
+		fmt.Printf("%+v", apiRes)
+		return
+	}
+}
+
+func StatsInitView(res http.ResponseWriter, triggerID string, push bool) {
+	games := addGameOptions(0, getGames(res))
+	var view slack.ModalViewRequest
+	view.Type = slack.ViewType("modal")
+	view.CallbackID = "gamestats"
+
+	view.Title = slack.NewTextBlockObject("plain_text", "Angrms Stats", false, false)
+	view.Close = slack.NewTextBlockObject("plain_text", "Close", false, false)
+	view.ClearOnClose = true
+
+	header := "Choose a game to see all the users who solved!"
+	headerBlock := slack.NewTextBlockObject("plain_text", header, false, false)
+	headerSection := slack.NewSectionBlock(headerBlock, nil, nil)
+
+	view.Blocks = slack.Blocks{
+		BlockSet: []slack.Block{
+			headerSection,
+			slack.NewDividerBlock(),
+			games,
+		},
+	}
+
+	var err error
+	var apiRes *slack.ViewResponse
+	if push {
+		apiRes, err = api.PushView(triggerID, view)
+	} else {
+		apiRes, err = api.OpenView(triggerID, view)
+	}
+
+	if err != nil {
+		fmt.Printf("%+v", apiRes)
+		return
+	}
+}
+
+func ShowStats(req slack.InteractionCallback, res http.ResponseWriter) {
+	gameID, _ := strconv.Atoi(req.ActionCallback.BlockActions[0].SelectedOption.Value)
+	game := getGames(res)[gameID]
+	solvedLayout := "_2 Jan 2006 3:04:05 PM"
+	layout := "_2 Jan 2006 3:04 PM"
+
+	var view slack.ModalViewRequest
+	view.Type = slack.ViewType("modal")
+	view.Title = slack.NewTextBlockObject("plain_text", "Angrms Stats", false, false)
+	view.Close = slack.NewTextBlockObject("plain_text", "Close", false, false)
+
+	header := game.User + "'s Game - " + game.Date.Local().Format(layout)
+	headerBlock := slack.NewTextBlockObject("plain_text", header, false, false)
+	headerSection := slack.NewSectionBlock(headerBlock, nil, nil)
+
+	var board []slack.Block
+	board = append(board, headerSection)
+	for i, solved := range game.Leaderboard {
+		position := strconv.Itoa(i + 1)
+		_, _, user := getUser(solved.User)
+		date := solved.Date.Local().Format(solvedLayout)
+
+		row := slack.NewTextBlockObject("mrkdwn", "*"+position+")*  _"+user+"_ - "+date, false, false)
+		rowSection := slack.NewSectionBlock(row, nil, nil)
+		board = append(board, rowSection)
+	}
+
+	view.Blocks.BlockSet = board
+
+	apiRes, err := api.UpdateView(view, "", req.Hash, req.View.ID)
 
 	if err != nil {
 		fmt.Printf("%+v", apiRes)
