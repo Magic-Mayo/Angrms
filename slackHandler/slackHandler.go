@@ -53,7 +53,7 @@ func SlashCommandHandler(res http.ResponseWriter, req *http.Request) {
 	command, err := slack.SlashCommandParse(req)
 
 	switch command.Command {
-	case "/angrm":
+	case "/angrms":
 		args.CheckArgs(res, command)
 	default:
 		handleResponse.HandleResponse(res, "", http.StatusInternalServerError)
