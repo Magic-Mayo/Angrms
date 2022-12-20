@@ -54,7 +54,7 @@ func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 			findGame(res, command)
 		case "stats":
 			StatsInitView(res, command.TriggerID, false)
-		case "instructions", "rules":
+		case "instructions", "rules", "tips":
 			Instructions(command.TriggerID, res, false)
 		default:
 			res.Write([]byte("Only the following commands are available:\n`/angrms create`\n`/angrms play`\n`/angrms stats`\n`/angrms find`"))
@@ -442,7 +442,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 			},
 		}
 
-		apiRes, err := api.PushView(req.TriggerID, view)
+		apiRes, err := api.UpdateView(view, "", req.Hash, req.View.ID)
 
 		if err != nil {
 			fmt.Printf("%+v", apiRes)
@@ -580,7 +580,7 @@ func Instructions(triggerID string, res http.ResponseWriter, push bool) {
 	createSection := slack.NewSectionBlock(createBlock, nil, nil)
 
 	playHeader := slack.NewHeaderBlock(slack.NewTextBlockObject("plain_text", "How to play", false, false))
-	playMessage := "1. You will guess one word at a time\n\n2. All games created will potentially have any of the letters used multiple times in the words.\n\n3. If a word is correct it will show up at the bottom\n\n4. if a guess is incorrect, nothing will happen and you need to manually clear the guess\n\n5. When you find all the words in a game you will be added to that game's leaderboard.\n\n6. Have fun! :confetti_ball:"
+	playMessage := "1. You will guess one word at a time\n\n2. All games created will potentially have any of the letters used multiple times in the words.\n\n3. If a word is correct it will show up at the bottom\n\n4. If a guess is incorrect, nothing will happen and you need to manually clear the guess\n\n5. When you find all the words in a game you will be added to that game's leaderboard.\n\n6. Have fun! :confetti_ball:"
 	playBlock := slack.NewTextBlockObject("plain_text", playMessage, false, false)
 	playSection := slack.NewSectionBlock(playBlock, nil, nil)
 
