@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
 	"gitlab.sweetwater.com/mike_mayo/slackbot/slices"
@@ -152,7 +151,7 @@ func createGameModal(user string) slack.ModalViewRequest {
 
 	expirationMessage := "How long would you like this game to be active? Hint: use a number followed by a time unit. If you don't want to set a time limit, leave this field blank"
 	expirationLabel := slack.NewTextBlockObject("plain_text", expirationMessage, false, false)
-	expirationHint := slack.NewTextBlockObject("plain_text", "Expiration untis: m = minutes, h = hours, d = days", false, false)
+	expirationHint := slack.NewTextBlockObject("plain_text", "Supported units: m = minutes, h = hours, d = days", false, false)
 	expirationPlaceholder := slack.NewTextBlockObject("plain_text", "3d", false, false)
 	expirationInput := slack.NewPlainTextInputBlockElement(expirationPlaceholder, "expiration")
 	expirationBlock := slack.NewInputBlock("expiration", expirationLabel, expirationHint, expirationInput)
@@ -169,8 +168,8 @@ func createGameModal(user string) slack.ModalViewRequest {
 		BlockSet: []slack.Block{
 			headerSection,
 			divider,
-			expirationBlock,
 			input,
+			expirationBlock,
 			privateInput,
 		},
 	}
@@ -331,7 +330,6 @@ func gameInput(gameId string) *slack.InputBlock {
 	inputHint := slack.NewTextBlockObject("plain_text", "Game ID "+gameId, false, false)
 	inputBlock := slack.NewPlainTextInputBlockElement(nil, "letters")
 	input := slack.NewInputBlock("guess", inputLabel, inputHint, inputBlock)
-	input.DispatchAction = true
 
 	return input
 }
@@ -355,6 +353,7 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	view.Type = slack.ViewType("modal")
 	view.Title = slack.NewTextBlockObject("plain_text", titleMessage, false, false)
 	view.Close = slack.NewTextBlockObject("plain_text", "Cancel", false, false)
+	view.Submit = slack.NewTextBlockObject("plain_text", "Guess!", false, false)
 
 	headerText := totalWords + " words left!"
 	header := slack.NewTextBlockObject("plain_text", headerText, false, false)
@@ -507,7 +506,7 @@ func findGameModal(res http.ResponseWriter, user string, private bool) (slack.Mo
 	} else {
 		games = getActiveGames(games, user)
 	}
-	spew.Dump(games)
+
 	firstname, _, _ := getUser(user)
 
 	var view slack.ModalViewRequest
@@ -662,7 +661,7 @@ func ParseMenu(req slack.InteractionCallback, res http.ResponseWriter) {
 		return
 	}
 
-	apiRes, err := api.UpdateView(view, "", req.Hash, req.View.ID)
+	apiRes, err := api.PushView(req.TriggerID, view)
 
 	if err != nil {
 		fmt.Printf("%+v", apiRes)
@@ -678,7 +677,6 @@ func StatsInitView(res http.ResponseWriter, triggerID string, push bool) {
 
 	view.Title = slack.NewTextBlockObject("plain_text", "Angrms Stats", false, false)
 	view.Close = slack.NewTextBlockObject("plain_text", "Close", false, false)
-	view.ClearOnClose = true
 
 	header := "Choose a game to see all the users who solved!"
 	headerBlock := slack.NewTextBlockObject("plain_text", header, false, false)
