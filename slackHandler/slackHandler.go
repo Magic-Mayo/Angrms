@@ -85,5 +85,7 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 		args.StatsInitView(res, modalRes.TriggerID, true)
 	case "gamestats":
 		args.ShowStats(modalRes, res)
+	default:
+		res.WriteHeader(http.StatusInternalServerError)
 	}
 }
