@@ -54,8 +54,10 @@ func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 			findGame(res, command)
 		case "stats":
 			StatsInitView(res, command.TriggerID, false)
+		case "instructions", "rules":
+			Instructions(command.TriggerID, res, false)
 		default:
-			res.Write([]byte("Only the following commands are available:\n`/angrm create`\n`/angrm play`\n`/angrm stats`"))
+			res.Write([]byte("Only the following commands are available:\n`/angrms create`\n`/angrms play`\n`/angrms stats`\n`/angrms find`"))
 		}
 	}
 }
@@ -562,6 +564,50 @@ func findGame(res http.ResponseWriter, command slack.SlashCommand) {
 	}
 }
 
+func Instructions(triggerID string, res http.ResponseWriter, push bool) {
+	var view slack.ModalViewRequest
+	view.Close = slack.NewTextBlockObject("plain_text", "Back", false, false)
+	view.Type = slack.ViewType("modal")
+	view.Title = slack.NewTextBlockObject("plain_text", "Angrms Tips", false, false)
+
+	if !push {
+		view.Close.Text = "Close"
+	}
+
+	createHeader := slack.NewHeaderBlock(slack.NewTextBlockObject("plain_text", "Creating a game", false, false))
+	createMessage := "1. Provide some letters to create the game with.\n\n2. Duplicate letters aren't necessary.  The game will use the supplied letters multiple times if it can.\n\n3. If you set an expiration on the game it will only be playable for that amount of time.\n\n4. Units for setting an expiration are `m`, `h`, and `d`.  At this time those are the only ones supported.  The unit is preceded by a number, so setting it to `30m`, for example, would make the game inactive after 30 minutes.\n\n5. If you mark a game as private it will only be playable by you.\n\n5. You will *_only_* be shown the amount of words that are created but *_not_* the words themselves."
+	createBlock := slack.NewTextBlockObject("mrkdwn", createMessage, false, false)
+	createSection := slack.NewSectionBlock(createBlock, nil, nil)
+
+	playHeader := slack.NewHeaderBlock(slack.NewTextBlockObject("plain_text", "How to play", false, false))
+	playMessage := "1. You will guess one word at a time\n\n2. All games created will potentially have any of the letters used multiple times in the words.\n\n3. If a word is correct it will show up at the bottom\n\n4. if a guess is incorrect, nothing will happen and you need to manually clear the guess\n\n5. When you find all the words in a game you will be added to that game's leaderboard.\n\n6. Have fun! :confetti_ball:"
+	playBlock := slack.NewTextBlockObject("plain_text", playMessage, false, false)
+	playSection := slack.NewSectionBlock(playBlock, nil, nil)
+
+	view.Blocks.BlockSet = []slack.Block{
+		createHeader,
+		createSection,
+		slack.NewDividerBlock(),
+		playHeader,
+		playSection,
+	}
+
+	var (
+		apiRes *slack.ViewResponse
+		err    error
+	)
+
+	if push {
+		apiRes, err = api.PushView(triggerID, view)
+	} else {
+		apiRes, err = api.OpenView(triggerID, view)
+	}
+
+	if err != nil {
+		fmt.Printf("%+v", apiRes)
+	}
+}
+
 func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
 	firstname, _, _ := getUser(command.UserName)
 	var view slack.ModalViewRequest
@@ -571,16 +617,18 @@ func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
 	view.Close = slack.NewTextBlockObject("plain_text", "Close", false, false)
 	view.ClearOnClose = true
 
-	welcome := ":wave: " + firstname + "!  If you haven't played yet, here are some pointers to get you started when creating a game. \nGo ahead and create a game or find one to play :point_down::point_down::point_down:"
+	welcome := ":wave: " + firstname + "!  If you haven't played yet, here are some pointers to get you started."
 	messageBlock := slack.NewTextBlockObject("plain_text", welcome, false, false)
 	messageSection := slack.NewSectionBlock(messageBlock, nil, nil)
 
-	createMessage := "1. Provide some letters to create the game with.\n2. Duplicate letters aren't necessary.  The game will use the letters given multiple times if it can.\n3. You will *_only_* be shown the amount of words that are created but *_not_* the words themselves."
-	createBlock := slack.NewTextBlockObject("mrkdwn", createMessage, false, false)
-	createSection := slack.NewSectionBlock(createBlock, nil, nil)
-	playMessage := "1. You will guess one word at a time\n2. If a word is correct it will show up at the bottom\n3. When you find all the words in a game you will be added to that game's leaderboard.\n4. Have fun! :confetti_ball:"
-	playBlock := slack.NewTextBlockObject("plain_text", playMessage, false, false)
-	playSection := slack.NewSectionBlock(playBlock, nil, nil)
+	tipsButtonMessage := slack.NewTextBlockObject("plain_text", "Learn to play", false, false)
+	tipsButtonText := slack.NewTextBlockObject("plain_text", "Tips", false, false)
+	tipsButton := slack.NewButtonBlockElement("tips", "tips", tipsButtonText)
+	tipsButtonAccessory := slack.NewAccessory(tipsButton)
+	tipsButtonSection := slack.NewSectionBlock(tipsButtonMessage, nil, tipsButtonAccessory)
+	tipsButtonSection.BlockID = "tips"
+
+	callToAction := slack.NewHeaderBlock(slack.NewTextBlockObject("plain_text", "Go ahead and create a game or find one to play :point_down::point_down::point_down:", false, false))
 
 	playButtonMessage := slack.NewTextBlockObject("plain_text", "Choose a game to play", false, false)
 	playButtonText := slack.NewTextBlockObject("plain_text", "Play", false, false)
@@ -611,9 +659,10 @@ func mainMenu(res http.ResponseWriter, command slack.SlashCommand) {
 
 	view.Blocks.BlockSet = []slack.Block{
 		messageSection,
-		createSection,
+		tipsButtonSection,
+		slack.NewDividerBlock(),
+		callToAction,
 		createButtonSection,
-		playSection,
 		playButtonSection,
 		playPrivateButtonSection,
 		statsSection,
@@ -658,6 +707,9 @@ func ParseMenu(req slack.InteractionCallback, res http.ResponseWriter) {
 		}
 	case "stats":
 		StatsInitView(res, req.TriggerID, true)
+		return
+	case "tips":
+		Instructions(req.TriggerID, res, true)
 		return
 	}
 
