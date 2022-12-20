@@ -11,7 +11,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
 	"gitlab.sweetwater.com/mike_mayo/slackbot/args"
-	handleResponse "gitlab.sweetwater.com/mike_mayo/slackbot/response"
 )
 
 var err = godotenv.Load(".env")
@@ -56,7 +55,7 @@ func SlashCommandHandler(res http.ResponseWriter, req *http.Request) {
 	case "/angrms":
 		args.CheckArgs(res, command)
 	default:
-		handleResponse.HandleResponse(res, "", http.StatusInternalServerError)
+		res.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 }
