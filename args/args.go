@@ -50,7 +50,7 @@ func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 		switch args[0] {
 		case "create":
 			createGame(command.UserName, command.TriggerID)
-		case "play":
+		case "find":
 			findGame(res, command)
 		case "stats":
 			StatsInitView(res, command.TriggerID, false)
@@ -330,6 +330,7 @@ func gameInput(gameId string) *slack.InputBlock {
 	inputHint := slack.NewTextBlockObject("plain_text", "Game ID "+gameId, false, false)
 	inputBlock := slack.NewPlainTextInputBlockElement(nil, "letters")
 	input := slack.NewInputBlock("guess", inputLabel, inputHint, inputBlock)
+	input.DispatchAction = true
 
 	return input
 }
@@ -353,7 +354,6 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	view.Type = slack.ViewType("modal")
 	view.Title = slack.NewTextBlockObject("plain_text", titleMessage, false, false)
 	view.Close = slack.NewTextBlockObject("plain_text", "Cancel", false, false)
-	view.Submit = slack.NewTextBlockObject("plain_text", "Guess!", false, false)
 
 	headerText := totalWords + " words left!"
 	header := slack.NewTextBlockObject("plain_text", headerText, false, false)
@@ -456,7 +456,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 		jsonString, err := json.Marshal(games)
 
 		if err != nil {
-			res.Write([]byte("Could not marshal json"))
+			fmt.Printf("%+v", err)
 		}
 
 		os.WriteFile("games.json", jsonString, os.ModePerm)
