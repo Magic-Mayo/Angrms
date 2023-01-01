@@ -68,8 +68,13 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 	}
 
 	var modalRes slack.InteractionCallback
+	err = json.Unmarshal([]byte(req.FormValue("payload")), &modalRes)
 
-	json.Unmarshal([]byte(req.FormValue("payload")), &modalRes)
+	if err != nil {
+		fmt.Printf("%+v", err)
+		res.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 
 	switch modalRes.View.CallbackID {
 	case "create":
@@ -85,6 +90,7 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 	case "gamestats":
 		args.ShowStats(modalRes, res)
 	default:
+		print("default")
 		res.WriteHeader(http.StatusInternalServerError)
 	}
 }
