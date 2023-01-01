@@ -1,6 +1,7 @@
 package args
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,27 +13,31 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
 	"gitlab.sweetwater.com/mike_mayo/slackbot/slices"
+	"gitlab.sweetwater.com/mike_mayo/slackbot/util"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 var err = godotenv.Load(".env")
 var api = slack.New(os.Getenv("OAUTH_TOKEN"), slack.OptionDebug(true))
 var nameSeparator = os.Getenv("NAME_SEPARATOR")
+var client = util.MongoClient().Database("slack")
 
 type Leaderboard struct {
-	User string    `json:"user,omitempty"`
-	Date time.Time `json:"date,omitempty"`
+	User string    `bson:"user,omitempty"`
+	Date time.Time `bson:"date,omitempty"`
 }
 
 type Game struct {
-	User        string        `json:"user"`
-	Id          int           `json:"id"`
-	Active      bool          `json:"active"`
-	Date        time.Time     `json:"date"`
-	Words       []string      `json:"words"`
-	Leaderboard []Leaderboard `json:"leaderboard,omitempty"`
-	Letters     string        `json:"letters"`
-	Private     bool          `json:"private,omitempty"`
-	Expiration  string        `json:"expiration,omitempty"`
+	User        string             `bson:"user"`
+	Id          primitive.ObjectID `bson:"_id,omitempty"`
+	Active      bool               `bson:"active"`
+	Date        time.Time          `bson:"date"`
+	Words       []string           `bson:"words"`
+	Leaderboard []Leaderboard      `bson:"leaderboard,omitempty"`
+	Letters     string             `bson:"letters"`
+	Private     bool               `bson:"private,omitempty"`
+	Expiration  string             `bson:"expiration,omitempty"`
 }
 
 type GameOption struct {
@@ -40,6 +45,17 @@ type GameOption struct {
 	Letters     string
 	UsersSolved int
 }
+
+// type GamesStats struct {
+// 	User   string `json:"user"`
+// 	Amount int    `json:"amount"`
+// }
+
+// type Stats struct {
+// 	Solved      []GameStats  `json:"solved,omitempty"`
+// 	Created     []GamesStats `json:"created,omitempty"`
+// 	UsersSolved []GamesStats `json:"usersSolved,omitempty"`
+// }
 
 func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 	args := strings.Fields(command.Text)
@@ -62,16 +78,13 @@ func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 	}
 }
 
-func getGames(res http.ResponseWriter) []Game {
-	file, err := os.ReadFile("games.json")
+func getGames(res http.ResponseWriter, filter bson.E) []Game {
+	gamesColl := client.Collection("games")
 
-	if err != nil {
-		res.Write([]byte("Could not open games file"))
-		return nil
-	}
+	a := util.GetDocs(gamesColl, filter)
 
 	var games []Game
-	json.Unmarshal(file, &games)
+	a.All(context.TODO(), &games)
 
 	return games
 }
@@ -144,7 +157,6 @@ func createGameModal(user string) slack.ModalViewRequest {
 
 	header := slack.NewTextBlockObject("mrkdwn", message, false, false)
 	headerSection := slack.NewSectionBlock(header, nil, nil)
-	divider := slack.NewDividerBlock()
 
 	inputLabel := slack.NewTextBlockObject("plain_text", "Letters to create game with", false, false)
 	inputPlaceholder := slack.NewTextBlockObject("plain_text", "rstlne", false, false)
@@ -169,7 +181,7 @@ func createGameModal(user string) slack.ModalViewRequest {
 	modal.Blocks = slack.Blocks{
 		BlockSet: []slack.Block{
 			headerSection,
-			divider,
+			slack.NewDividerBlock(),
 			input,
 			expirationBlock,
 			privateInput,
@@ -276,9 +288,6 @@ func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 		res.Header().Add("Content-Type", "application/json")
 		res.Write(jsonString)
 
-		games := getGames(res)
-		id := len(games)
-
 		var game Game
 
 		game.User = user
@@ -286,21 +295,16 @@ func SaveNewGame(payload slack.InteractionCallback, res http.ResponseWriter) {
 		game.Leaderboard = make([]Leaderboard, 0)
 		game.Words = words
 		game.Date = time.Now()
-		game.Id = id
 		game.Letters = letters
 		game.Private = private
 		game.Expiration = expiration
 
-		games = append(games, game)
-
-		jsonString, err := json.Marshal(games)
+		insert, err := client.Collection("games").InsertOne(context.TODO(), game)
 
 		if err != nil {
-			fmt.Print(err)
-			return
+			fmt.Printf("%+v", insert)
+			fmt.Printf("%+v", err)
 		}
-
-		os.WriteFile("games.json", jsonString, os.ModePerm)
 	}
 }
 
@@ -308,6 +312,7 @@ func addGameOptions(offset int, games []Game) slack.ActionBlock {
 	var options []slack.BlockElement
 	for i := offset; i < len(games); i++ {
 		game := games[i]
+		gameID, _ := game.Id.MarshalText()
 		_, _, fullname := getUser(game.User)
 		letters := game.Letters
 		solved := len(game.Leaderboard)
@@ -318,8 +323,8 @@ func addGameOptions(offset int, games []Game) slack.ActionBlock {
 		descriptionText := fullname + " - " + strconv.Itoa(len(game.Words)) + " words"
 		description := slack.NewTextBlockObject("plain_text", descriptionText, false, false)
 
-		optionBlock := slack.NewOptionBlockObject(strconv.Itoa(game.Id), optionText, description)
-		gameSelect := slack.NewRadioButtonsBlockElement(strconv.Itoa(game.Id), optionBlock)
+		optionBlock := slack.NewOptionBlockObject(string(gameID), optionText, description)
+		gameSelect := slack.NewRadioButtonsBlockElement(string(gameID), optionBlock)
 		options = append(options, gameSelect)
 	}
 
@@ -342,11 +347,18 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	view.CallbackID = "play"
 
 	selectedGame := req.ActionCallback.BlockActions[0].SelectedOption
-	gameId := selectedGame.Value
+	gameId, err := primitive.ObjectIDFromHex(selectedGame.Value)
+
+	if err != nil {
+		fmt.Printf("%+v", err)
+		res.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
 	splitDescriptiom := strings.Split(selectedGame.Description.Text, " - ")
 	creator := splitDescriptiom[0]
 	totalWords := strings.Split(splitDescriptiom[1], " words")[0]
-	view.PrivateMetadata = gameId
+	view.PrivateMetadata = selectedGame.Value
 
 	if len(creator) > 18 {
 		creator = strings.Split(creator, " ")[0]
@@ -361,13 +373,16 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	header := slack.NewTextBlockObject("plain_text", headerText, false, false)
 	headerSection := slack.NewSectionBlock(header, nil, nil)
 
-	games := getGames(res)
-	id, _ := strconv.Atoi(gameId)
-	letters := "*" + strings.ToUpper(games[id].Letters) + "*"
+	found := client.Collection("games").FindOne(context.TODO(), bson.D{{"_id", gameId}})
+
+	var game Game
+	found.Decode(&game)
+
+	letters := "*" + strings.ToUpper(game.Letters) + "*"
 	letterBlock := slack.NewTextBlockObject("mrkdwn", letters, false, false)
 	letterSection := slack.NewSectionBlock(letterBlock, nil, nil)
 
-	input := gameInput(gameId)
+	input := gameInput(selectedGame.Value)
 
 	view.Blocks = slack.Blocks{
 		BlockSet: []slack.Block{
@@ -385,19 +400,51 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	}
 }
 
+func foundWordsSection(wordsFound []string) []slack.Block {
+	var blocks []slack.Block
+	message := slack.NewTextBlockObject("plain_text", "You found: ", false, false)
+	messageBlock := slack.NewSectionBlock(message, nil, nil)
+
+	blocks = append(blocks, []slack.Block{
+		slack.NewDividerBlock(),
+		messageBlock,
+	}...)
+
+	for _, word := range wordsFound {
+		newWord := slack.NewTextBlockObject("plain_text", word, false, false)
+		newWordSection := slack.NewSectionBlock(newWord, nil, nil)
+		blocks = append(blocks, newWordSection)
+	}
+
+	return blocks
+}
+
+func alreadyGuessed(wordsFound []string, guess string) bool {
+	for _, word := range wordsFound {
+		if word == guess {
+			return true
+		}
+	}
+
+	return false
+}
+
 func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
-	games := getGames(res)
 	guess := strings.ToLower(req.View.State.Values["guess"]["letters"].Value)
 	view := updateModal(req)
 
-	if games == nil {
+	meta := strings.Split(req.View.PrivateMetadata, ",")
+	gameId, err := primitive.ObjectIDFromHex(meta[0])
+
+	if err != nil {
+		fmt.Print("Could not convert hex string to mongo object id")
+		res.WriteHeader(500)
 		return
 	}
 
-	meta := strings.Split(req.View.PrivateMetadata, ",")
-	gameId, _ := strconv.Atoi(meta[0])
+	var game Game
+	client.Collection("games").FindOne(context.TODO(), bson.D{{"_id", gameId}}).Decode(&game)
 
-	game := games[gameId]
 	user := req.User.Name
 
 	var wordsFound []string
@@ -406,24 +453,43 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	}
 
 	incorrectGuess := true
+	guessed := alreadyGuessed(wordsFound, guess)
 
-	for _, word := range game.Words {
-		if guess == word {
-			wordsFound = append(wordsFound, word)
-			incorrectGuess = false
-			break
+	if !guessed {
+		for _, word := range game.Words {
+			if guess == word {
+				wordsFound = append(wordsFound, word)
+				incorrectGuess = false
+				break
+			}
 		}
 	}
 
-	if incorrectGuess {
-		errorMap := make(map[string]string)
-		errorMap["guess"] = "'" + guess + "' is incorrect!"
-		errors := slack.NewErrorsViewSubmissionResponse(errorMap)
+	if guessed || incorrectGuess {
+		view.Blocks = req.View.Blocks
+		view.Blocks.BlockSet = req.View.Blocks.BlockSet[:2]
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, gameInput(meta[0]))
+		view.CallbackID = "play"
+		view.PrivateMetadata = req.View.PrivateMetadata
 
-		jsonString, _ := json.Marshal(errors)
+		errorMessage := "*_" + strings.ToUpper(guess) + "_*"
+		if guessed {
+			errorMessage = errorMessage + " already guessed!"
+		} else if incorrectGuess {
+			errorMessage = errorMessage + " is incorrect!"
+		}
 
-		res.Header().Add("Content-Type", "application/json")
-		res.Write(jsonString)
+		errorBlock := slack.NewTextBlockObject("mrkdwn", errorMessage, false, false)
+		errorSection := slack.NewSectionBlock(errorBlock, nil, nil)
+
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, errorSection)
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, foundWordsSection(wordsFound)...)
+
+		apiRes, err := api.UpdateView(view, view.ExternalID, req.Hash, req.View.ID)
+
+		if err != nil {
+			fmt.Printf("%+v", apiRes)
+		}
 	} else if len(wordsFound) == len(game.Words) {
 		_, _, creator := getUser(game.User)
 		var view slack.ModalViewRequest
@@ -448,25 +514,28 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 			fmt.Printf("%+v", apiRes)
 		}
 
-		game.Leaderboard = append(game.Leaderboard, Leaderboard{
-			User: user,
-			Date: time.Now(),
-		})
+		leaderboard := bson.D{{
+			"$addToSet", bson.D{{
+				"leaderboard", Leaderboard{
+					User: user,
+					Date: time.Now(),
+				},
+			}},
+		}}
 
-		games[game.Id] = game
-
-		jsonString, err := json.Marshal(games)
+		_, err = client.Collection("games").UpdateByID(context.TODO(), game.Id, leaderboard)
 
 		if err != nil {
 			fmt.Printf("%+v", err)
+			return
 		}
-
-		os.WriteFile("games.json", jsonString, os.ModePerm)
 	} else if len(wordsFound) > 0 {
 		view.PrivateMetadata = strings.Join(wordsFound, ",")
 		view.PrivateMetadata = meta[0] + "," + view.PrivateMetadata
 		view.CallbackID = "play"
 		view.Blocks = req.View.Blocks
+		view.Blocks.BlockSet = req.View.Blocks.BlockSet[:2]
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, gameInput(meta[0]))
 
 		totalWords := strconv.Itoa(len(game.Words) - len(wordsFound))
 
@@ -476,20 +545,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 
 		view.Blocks.BlockSet[1] = headerSection
 
-		if len(view.Blocks.BlockSet) == 2 {
-			divider := slack.NewDividerBlock()
-			message := slack.NewTextBlockObject("plain_text", "You found: ", false, false)
-			messageBlock := slack.NewSectionBlock(message, nil, nil)
-
-			view.Blocks.BlockSet = append(view.Blocks.BlockSet, []slack.Block{
-				divider,
-				messageBlock,
-			}...)
-		}
-
-		newWord := slack.NewTextBlockObject("plain_text", wordsFound[len(wordsFound)-1], false, false)
-		newWordSection := slack.NewSectionBlock(newWord, nil, nil)
-		view.Blocks.BlockSet = append(view.Blocks.BlockSet, newWordSection)
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, foundWordsSection(wordsFound)...)
 
 		apiRes, err := api.UpdateView(view, req.View.ExternalID, req.Hash, req.View.ID)
 
@@ -501,8 +557,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 }
 
 func findGameModal(res http.ResponseWriter, user string, private bool) (slack.ModalViewRequest, []Game) {
-	var games []Game
-	games = getGames(res)
+	games := getGames(res, bson.E{})
 	if private {
 		games = getOwnPrivateGames(games, user)
 	} else {
@@ -522,14 +577,13 @@ func findGameModal(res http.ResponseWriter, user string, private bool) (slack.Mo
 
 	header := slack.NewTextBlockObject("mrkdwn", message, false, false)
 	headerSection := slack.NewSectionBlock(header, nil, nil)
-	divider := slack.NewDividerBlock()
 
 	gameOptions := addGameOptions(0, games)
 
 	view.Blocks = slack.Blocks{
 		BlockSet: []slack.Block{
 			headerSection,
-			divider,
+			slack.NewDividerBlock(),
 			gameOptions,
 		},
 	}
@@ -683,19 +737,14 @@ func ParseMenu(req slack.InteractionCallback, res http.ResponseWriter) {
 	switch selectedOption {
 	case "create":
 		view = createGameModal(req.User.Name)
-	case "play":
-		modal, games := findGameModal(res, req.User.Name, false)
-		view = modal
+	case "play", "play-private":
+		private := false
 
-		if len(games) == 0 {
-			viewResponse := slack.NewTextBlockObject("plain_text", "Could not find any games :cry:", false, false)
-			viewSection := slack.NewSectionBlock(viewResponse, nil, nil)
-			view.Blocks.BlockSet = []slack.Block{
-				viewSection,
-			}
+		if selectedOption == "play-private" {
+			private = true
 		}
-	case "play-private":
-		modal, games := findGameModal(res, req.User.Name, true)
+
+		modal, games := findGameModal(res, req.User.Name, private)
 		view = modal
 
 		if len(games) == 0 {
@@ -722,7 +771,7 @@ func ParseMenu(req slack.InteractionCallback, res http.ResponseWriter) {
 }
 
 func StatsInitView(res http.ResponseWriter, triggerID string, push bool) {
-	games := addGameOptions(0, getGames(res))
+	games := addGameOptions(0, getGames(res, bson.E{}))
 	var view slack.ModalViewRequest
 	view.Type = slack.ViewType("modal")
 	view.CallbackID = "gamestats"
@@ -757,8 +806,9 @@ func StatsInitView(res http.ResponseWriter, triggerID string, push bool) {
 }
 
 func ShowStats(req slack.InteractionCallback, res http.ResponseWriter) {
-	gameID, _ := strconv.Atoi(req.ActionCallback.BlockActions[0].SelectedOption.Value)
-	game := getGames(res)[gameID]
+	gameID, _ := primitive.ObjectIDFromHex(req.ActionCallback.BlockActions[0].SelectedOption.Value)
+	var game Game
+	client.Collection("games").FindOne(context.TODO(), bson.E{"_id", gameID}).Decode(&game)
 	solvedLayout := "_2 Jan 2006 3:04:05 PM"
 	layout := "_2 Jan 2006 3:04 PM"
 
@@ -792,3 +842,31 @@ func ShowStats(req slack.InteractionCallback, res http.ResponseWriter) {
 		return
 	}
 }
+
+// func getStats(res http.ResponseWriter) []Stats {
+// 	file, err := os.ReadFile("stats.json")
+
+// 	if err != nil {
+// 		res.Write([]byte("Could not open stats file"))
+// 		return nil
+// 	}
+
+// 	var stats []Stats
+// 	json.Unmarshal(file, &stats)
+
+// 	return stats
+// }
+
+// func GamesSolvedStats(req slack.InteractionCallback, res http.ResponseWriter){
+// 	stats := os.ReadFile("stats.json")
+// 	var view slack.ModalViewRequest
+
+// 	header := slack.NewTextBlockObject("plain_text", "Most Games Solved", false, false)
+// 	headerBlock := slack.NewHeaderBlock(header, nil)
+
+// 	var stats []slack.Block
+
+// 	for _, user := range  {
+
+// 	}
+// }
