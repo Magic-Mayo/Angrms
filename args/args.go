@@ -332,11 +332,11 @@ func addGameOptions(offset int, games []Game) slack.ActionBlock {
 	return *actionBlock
 }
 
-func gameInput(gameId string) *slack.InputBlock {
+func gameInput(gameId string, blockId string) *slack.InputBlock {
 	inputLabel := slack.NewTextBlockObject("plain_text", "Make a guess!", false, false)
 	inputHint := slack.NewTextBlockObject("plain_text", "Game ID "+gameId, false, false)
 	inputBlock := slack.NewPlainTextInputBlockElement(nil, "letters")
-	input := slack.NewInputBlock("guess", inputLabel, inputHint, inputBlock)
+	input := slack.NewInputBlock(blockId, inputLabel, inputHint, inputBlock)
 	input.DispatchAction = true
 
 	return input
@@ -382,7 +382,7 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	letterBlock := slack.NewTextBlockObject("mrkdwn", letters, false, false)
 	letterSection := slack.NewSectionBlock(letterBlock, nil, nil)
 
-	input := gameInput(selectedGame.Value)
+	input := gameInput(selectedGame.Value, "guess")
 
 	view.Blocks = slack.Blocks{
 		BlockSet: []slack.Block{
@@ -431,6 +431,12 @@ func alreadyGuessed(wordsFound []string, guess string) bool {
 
 func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	guess := strings.ToLower(req.View.State.Values["guess"]["letters"].Value)
+	blockId := "gues"
+
+	if guess == "" {
+		guess = strings.ToLower(req.View.State.Values["gues"]["letters"].Value)
+		blockId = "guess"
+	}
 	view := updateModal(req)
 
 	meta := strings.Split(req.View.PrivateMetadata, ",")
@@ -468,7 +474,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	if guessed || incorrectGuess {
 		view.Blocks = req.View.Blocks
 		view.Blocks.BlockSet = req.View.Blocks.BlockSet[:2]
-		view.Blocks.BlockSet = append(view.Blocks.BlockSet, gameInput(meta[0]))
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, gameInput(meta[0], blockId))
 		view.CallbackID = "play"
 		view.PrivateMetadata = req.View.PrivateMetadata
 
@@ -535,7 +541,7 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 		view.CallbackID = "play"
 		view.Blocks = req.View.Blocks
 		view.Blocks.BlockSet = req.View.Blocks.BlockSet[:2]
-		view.Blocks.BlockSet = append(view.Blocks.BlockSet, gameInput(meta[0]))
+		view.Blocks.BlockSet = append(view.Blocks.BlockSet, gameInput(meta[0], blockId))
 
 		totalWords := strconv.Itoa(len(game.Words) - len(wordsFound))
 
