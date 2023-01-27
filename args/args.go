@@ -28,6 +28,12 @@ type Leaderboard struct {
 	Date time.Time `bson:"date,omitempty"`
 }
 
+type Metadata struct {
+	Offset int      `json:"offset,omitempty"`
+	GameID string   `json:"gameId,omitempty"`
+	Words  []string `json:"words,omitempty"`
+}
+
 type Game struct {
 	User        string             `bson:"user"`
 	Id          primitive.ObjectID `bson:"_id,omitempty"`
@@ -45,17 +51,6 @@ type GameOption struct {
 	Letters     string
 	UsersSolved int
 }
-
-// type GamesStats struct {
-// 	User   string `json:"user"`
-// 	Amount int    `json:"amount"`
-// }
-
-// type Stats struct {
-// 	Solved      []GameStats  `json:"solved,omitempty"`
-// 	Created     []GamesStats `json:"created,omitempty"`
-// 	UsersSolved []GamesStats `json:"usersSolved,omitempty"`
-// }
 
 func CheckArgs(res http.ResponseWriter, command slack.SlashCommand) {
 	args := strings.Fields(command.Text)
@@ -346,7 +341,9 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	var view slack.ModalViewRequest
 	view.CallbackID = "play"
 
+	var meta Metadata
 	selectedGame := req.ActionCallback.BlockActions[0].SelectedOption
+	// meta.GameID = selectedGame.Value
 	gameId, err := primitive.ObjectIDFromHex(selectedGame.Value)
 
 	if err != nil {
@@ -358,7 +355,7 @@ func StartGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	splitDescriptiom := strings.Split(selectedGame.Description.Text, " - ")
 	creator := splitDescriptiom[0]
 	totalWords := strings.Split(splitDescriptiom[1], " words")[0]
-	view.PrivateMetadata = selectedGame.Value
+	view.PrivateMetadata, err = json.Marshal(meta)
 
 	if len(creator) > 18 {
 		creator = strings.Split(creator, " ")[0]
@@ -529,6 +526,12 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 			}},
 		}}
 
+		// userSolved := bson.D{{
+		// 	"$set", bson.D{{
+		// 		""
+		// 	}}
+		// }}
+
 		_, err = client.Collection("games").UpdateByID(context.TODO(), game.Id, leaderboard)
 
 		if err != nil {
@@ -562,13 +565,13 @@ func PlayGame(req slack.InteractionCallback, res http.ResponseWriter) {
 	}
 }
 
-func findGameModal(res http.ResponseWriter, user string, private bool) (slack.ModalViewRequest, []Game) {
-	games := getGames(res, bson.E{})
+func findGameModal(res http.ResponseWriter, user string, private bool, offset int) (slack.ModalViewRequest, []Game) {
+	var filter bson.E
 	if private {
-		games = getOwnPrivateGames(games, user)
-	} else {
-		games = getActiveGames(games, user)
+		filter = bson.E{"user", user}
 	}
+
+	games := getGames(res, filter)
 
 	firstname, _, _ := getUser(user)
 
@@ -750,7 +753,16 @@ func ParseMenu(req slack.InteractionCallback, res http.ResponseWriter) {
 			private = true
 		}
 
-		modal, games := findGameModal(res, req.User.Name, private)
+		offsetMeta := req.View.PrivateMetadata
+
+		offset, err := strconv.Atoi()
+
+		if err != nil {
+			fmt.Printf("%+v", err)
+			res.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		modal, games := findGameModal(res, req.User.Name, private, offset)
 		view = modal
 
 		if len(games) == 0 {
