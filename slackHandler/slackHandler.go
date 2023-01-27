@@ -90,7 +90,6 @@ func InteractiveHandler(res http.ResponseWriter, req *http.Request) {
 	case "gamestats":
 		args.ShowStats(modalRes, res)
 	default:
-		print("default")
 		res.WriteHeader(http.StatusInternalServerError)
 	}
 }
