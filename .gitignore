@@ -1,4 +1,4 @@
 *.env
 games.json
-
+.DS_Store
 !example.env
